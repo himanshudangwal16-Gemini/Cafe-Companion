@@ -1,0 +1,8 @@
+{
+  "name": "Remix Café Companion: VibeCraft \u0026 CounterFlow",
+  "description": "AI-native specialty café platform unifying walk-in POS handoff, live WebSocket order timers, multimodal palate discovery, Table Connect vector matching, and Barista KDS operations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

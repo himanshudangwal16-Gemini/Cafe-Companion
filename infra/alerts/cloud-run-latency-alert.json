@@ -1,0 +1,28 @@
+{
+  "displayName": "Cafe Companion — Cloud Run High p95 Latency (> 3s)",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Cloud Run p95 request latency > 3000ms",
+      "conditionThreshold": {
+        "filter": "resource.type = \"cloud_run_revision\" AND resource.labels.service_name = \"cafe-companion-api\" AND metric.type = \"run.googleapis.com/request_latencies\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 3000,
+        "duration": "120s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_PERCENTILE_95"
+          }
+        ],
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "documentation": {
+    "content": "The 95th percentile request latency on cafe-companion-api exceeded 3 seconds for 2 consecutive minutes. Check Gemini API response times, cold start frequency, and Firestore index status.",
+    "mimeType": "text/markdown"
+  }
+}

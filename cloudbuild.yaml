@@ -1,0 +1,74 @@
+# Café Companion: VibeCraft & CounterFlow — Automated Test-Gated Cloud Build CI/CD
+# Run with:
+#   gcloud builds submit --region=asia-south1 \
+#     --service-account="projects/${PROJECT_ID}/serviceAccounts/cafe-build-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+#     --default-buckets-behavior=regional-user-owned-bucket \
+#     --config=cloudbuild.yaml .
+
+substitutions:
+  _REGION: asia-south1
+  _REPO_NAME: cafe-companion-repo
+  _IMAGE_NAME: cafe-companion
+  _SERVICE_NAME: cafe-companion-api
+  _RUNTIME_SA: cafe-api-sa
+  _GEMINI_SECRET: gemini-api-key
+  _FIRESTORE_DB: (default)
+
+steps:
+  # 1. Gate every release on full pytest API suite + 18-case Gemini & prompt-injection evals ($0.00)
+  - id: run-tests-and-evals
+    name: python:3.12-slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        pip install --no-cache-dir -q -r backend/requirements.txt
+        PYTHONPATH=backend pytest -v backend/tests
+
+  # 2. Build multi-stage Vite PWA + FastAPI non-root container image
+  - id: build-container
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["run-tests-and-evals"]
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${BUILD_ID}
+      - -f
+      - Dockerfile
+      - .
+
+  # 3. Push container image to regional Artifact Registry (3-image cleanup policy keeps cost at $0.00)
+  - id: push-container
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["build-container"]
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${BUILD_ID}
+
+  # 4. Deploy zero-downtime Cloud Run revision in asia-south1 (scale-to-zero, max-instances=3)
+  - id: deploy-cloud-run
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    waitFor: ["push-container"]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${BUILD_ID}
+      - --service-account=${_RUNTIME_SA}@$PROJECT_ID.iam.gserviceaccount.com
+      - --cpu=1
+      - --memory=512Mi
+      - --concurrency=80
+      - --timeout=60
+      - --min-instances=0
+      - --max-instances=3
+      - --update-env-vars=APP_ENV=production,USE_LOCAL_STORE=false,LOCAL_DEV_AUTH_BYPASS=false,ENABLE_WEBSOCKETS=false,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,FIRESTORE_DATABASE=${_FIRESTORE_DB},GEMINI_MODEL=gemini-4-hydrogen,EMBEDDING_MODEL=gemini-embedding-2
+      - --set-secrets=GEMINI_API_KEY=${_GEMINI_SECRET}:latest
+      - --allow-unauthenticated
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_IMAGE_NAME}:${BUILD_ID}
+
+options:
+  logging: CLOUD_LOGGING_ONLY

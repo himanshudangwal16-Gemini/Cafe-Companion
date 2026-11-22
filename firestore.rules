@@ -1,0 +1,88 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isStaff() {
+      return isSignedIn() && (
+        request.auth.token.role == 'barista' ||
+        request.auth.token.role == 'shift_lead' ||
+        request.auth.token.role == 'admin'
+      );
+    }
+
+    function validRating(val) {
+      return val is int && val >= 1 && val <= 5;
+    }
+
+    // Menu catalog: public read, staff-only writes (backend handles transactional decrements via Admin SDK)
+    match /menu_items/{sku} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+
+    // Orders: patrons can read their own orders; staff can read/update all orders;
+    // zero-app QR handoff reads go through backend /api/orders/handoff/{token} or scoped doc read.
+    match /orders/{orderId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+      allow create, update, delete: if false; // Enforced exclusively via FastAPI transactional Admin SDK
+    }
+
+    // Post-completion drink & service ratings: staff read/acknowledge; immutable client writes blocked (API validates order status & ownership)
+    match /order_feedback/{orderId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.submitted_by_uid == request.auth.uid);
+      allow create: if isSignedIn()
+        && request.resource.data.submitted_by_uid == request.auth.uid
+        && validRating(request.resource.data.drink_quality_rating)
+        && validRating(request.resource.data.service_experience_rating)
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() <= 500
+        && request.resource.data.acknowledged == false;
+      allow update: if isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged', 'acknowledged_at']);
+      allow delete: if false;
+    }
+
+    // Ephemeral Table Connect profiles (2h TTL on expires_at):
+    // Signed-in patrons can only read active opt-in profiles and manage their own document.
+    match /community_vibes/{uid} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == uid ||
+        (resource.data.open_to_connect == true && resource.data.expires_at > request.time)
+      );
+      allow create, update: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && request.resource.data.display_name is string
+        && request.resource.data.display_name.size() <= 60
+        && request.resource.data.focus_tag is string
+        && request.resource.data.focus_tag.size() <= 120
+        && request.resource.data.focus_description is string
+        && request.resource.data.focus_description.size() <= 320
+        && request.resource.data.expires_at > request.time;
+      allow delete: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Ambient noise & comfort telemetry: public read for lounge pulse, staff-only resolution
+    match /ambient_logs/{logId} {
+      allow read: if true;
+      allow create, delete: if false; // Created via FastAPI after Gemini triage
+      allow update: if isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolved', 'resolved_at']);
+    }
+
+    // Private user profiles (PII isolation)
+    match /users/{uid} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Default deny for all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
